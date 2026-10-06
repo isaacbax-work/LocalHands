@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>LocalHands</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;800&family=Figtree:wght@400;600&display=swap">
+<style>
+  :root {
+    --bg: #f6f7f4; --panel: #ffffff; --fg: #1d2420; --muted: #66706a; --line: #e2e6e1;
+    --sale: #2e9e4f; --free: #8b5cf6; --task: #e0443e; --service: #2f74d0; --group: #f08c1a;
+    --display: "Bricolage Grotesque", system-ui, sans-serif;
+    --body: "Figtree", system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #141815; --panel: #1c211e; --fg: #e8ece9; --muted: #98a29c; --line: #2c332f; color-scheme: dark; }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { height: 100%; margin: 0; }
+  body { font: 15px/1.45 var(--body); background: var(--bg); color: var(--fg); display: grid; grid-template-rows: auto 1fr; }
+
+  header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; padding-top: calc(10px + env(safe-area-inset-top, 0px)); background: var(--panel); border-bottom: 1px solid var(--line); z-index: 1000; }
+  header h1 { font: 800 22px var(--display); margin: 0; letter-spacing: -0.02em; }
+  header h1 span { color: var(--sale); }
+  header .spacer { flex: 1; }
+  button { font: 600 14px var(--body); border: 0; border-radius: 999px; padding: 8px 14px; cursor: pointer; background: var(--line); color: var(--fg); }
+  button.primary { background: var(--fg); color: var(--bg); }
+  button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--service); outline-offset: 2px; }
+
+  main { display: grid; grid-template-columns: 380px 1fr; min-height: 0; }
+  #map { min-height: 0; }
+  aside { display: flex; flex-direction: column; min-height: 0; background: var(--panel); border-right: 1px solid var(--line); }
+  .filters { padding: 12px 16px; display: flex; flex-direction: column; gap: 10px; border-bottom: 1px solid var(--line); }
+  .filters input[type=search] { width: 100%; padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--fg); font: inherit; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 11px; font-size: 13px; background: var(--bg); border: 1px solid var(--line); }
+  .chip .dot { width: 10px; height: 10px; border-radius: 50%; }
+  .chip[aria-pressed=false] { opacity: 0.45; }
+  .count { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+
+  #list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
+  #list li { padding: 12px 16px; border-bottom: 1px solid var(--line); cursor: pointer; display: grid; grid-template-columns: 6px 1fr auto; gap: 12px; }
+  #list li:hover, #list li:focus-visible { background: var(--bg); outline: none; }
+  #list .stripe { border-radius: 3px; }
+  #list h3 { margin: 0; font: 600 15px var(--body); }
+  #list p { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
+  #list .price { font: 800 15px var(--display); white-space: nowrap; }
+  .tag { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
+  .empty { padding: 24px 16px; color: var(--muted); }
+
+  .pin { width: 26px; height: 26px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); border: 3px solid #fff; box-shadow: 0 2px 6px rgba(0,0,0,.35); }
+  .leaflet-popup-content { font: 14px/1.4 var(--body); margin: 12px 14px; }
+  .leaflet-popup-content h3 { margin: 4px 0; font: 600 16px var(--body); }
+  .leaflet-popup-content p { margin: 4px 0; }
+
+  dialog { border: 0; border-radius: 16px; padding: 0; width: min(440px, calc(100% - 32px)); background: var(--panel); color: var(--fg); }
+  dialog::backdrop { background: rgba(0,0,0,.4); }
+  dialog form { padding: 20px; display: flex; flex-direction: column; gap: 12px; }
+  dialog h2 { margin: 0; font: 800 20px var(--display); }
+  dialog label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 600; }
+  dialog input, dialog select, dialog textarea { font: inherit; padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--fg); }
+  dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
+  .hint { font-size: 13px; color: var(--muted); margin: 0; }
+
+  #drawbar { position: absolute; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); z-index: 999; width: max-content; max-width: calc(100% - 32px); background: var(--panel); color: var(--fg); padding: 10px 12px 10px 16px; border-radius: 16px; box-shadow: 0 4px 16px rgba(0,0,0,.25); display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+  #drawbar .km { font: 800 18px var(--display); font-variant-numeric: tabular-nums; }
+  #drawbar .msg { font-size: 13px; color: var(--muted); }
+  #drawbar .btns { display: flex; gap: 6px; }
+  body.drawing .leaflet-marker-pane *, body.drawing .leaflet-overlay-pane * { pointer-events: none !important; }
+  #list .route { color: var(--group); font-weight: 600; }
+
+  #viewToggle { display: none; }
+  /* Mobile: one view at a time, toggled from the header */
+  @media (max-width: 760px) {
+    main { grid-template-columns: 1fr; position: relative; }
+    aside, #map { grid-area: 1 / 1; }
+    body.show-map aside { visibility: hidden; }
+    body:not(.show-map) #map { visibility: hidden; }
+    #viewToggle { display: inline-block; }
+    header h1 { font-size: 19px; }
+  }
+</style>
+</head>
+<body class="show-map">
+<header>
+  <h1>Local<span>Hands</span></h1>
+  <div class="spacer"></div>
+  <button id="viewToggle" type="button">List</button>
+  <button id="addBtn" class="primary" type="button">+ Post</button>
+</header>
+
+<main>
+  <aside>
+    <div class="filters">
+      <input id="q" type="search" placeholder="Search posts" aria-label="Search posts">
+      <div class="chips" id="chips"></div>
+      <div class="count" id="count"></div>
+    </div>
+    <ul id="list"></ul>
+  </aside>
+  <div id="map" style="position:relative">
+    <div id="drawbar" hidden>
+      <span class="km" id="drawkm" hidden></span>
+      <span class="msg" id="drawmsg"></span>
+      <span class="btns">
+        <button type="button" id="undoPt">Undo</button>
+        <button type="button" id="cancelDraw">Cancel</button>
+        <button type="button" id="finishDraw" class="primary">Post</button>
+      </span>
+    </div>
+  </div>
+</main>
+
+<dialog id="dlg">
+  <form id="form" method="dialog">
+    <h2>New post</h2>
+    <label>Type <select id="f-type" required></select></label>
+    <label id="f-route-wrap" hidden>Route
+      <select id="f-route">
+        <option value="">No route, just a meeting spot</option>
+        <option value="foot">Run / walk route</option>
+        <option value="bike">Ride route</option>
+      </select>
+    </label>
+    <label>Title <input id="f-title" required maxlength="80" placeholder="e.g. Mowing a small front lawn"></label>
+    <label>Details <textarea id="f-desc" rows="3" maxlength="400"></textarea></label>
+    <label>Price (leave blank if free / n/a) <input id="f-price" maxlength="30" placeholder="$20, $25/hr, Negotiable"></label>
+    <label>Contact <input id="f-contact" required maxlength="80" placeholder="Name and phone or email"></label>
+    <p class="hint">Next you tap the map to place it. For a route, tap points along the way and it follows the roads.</p>
+    <div class="row">
+      <button type="button" id="cancel">Cancel</button>
+      <button class="primary" type="submit">Pick location</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const TYPES = {
+  sale:    { label: 'For sale',     color: 'var(--sale)' },
+  free:    { label: 'Giving away',  color: 'var(--free)' },
+  task:    { label: 'Needs a hand', color: 'var(--task)' },
+  service: { label: 'Service',      color: 'var(--service)' },
+  group:   { label: 'Group / gathering', color: 'var(--group)' },
+};
+
+// Example posts (Sydney). ponytail: localStorage only — posts stay on this device; needs a backend to share between users.
+const SEED = [
+  { type: 'sale', title: 'Kids bike, 16 inch', desc: 'Good condition, training wheels included.', price: '$40', contact: 'Sam 0400 000 001', lat: -33.889, lng: 151.274 },
+  { type: 'free', title: 'Bookshelf, free to good home', desc: 'Pine, 5 shelves. Must pick up.', price: '', contact: 'Priya 0400 000 002', lat: -33.884, lng: 151.226 },
+  { type: 'task', title: 'Help moving a couch', desc: 'Need one extra pair of hands Saturday morning, 2nd floor.', price: '$30', contact: 'Jordan 0400 000 003', lat: -33.896, lng: 151.180 },
+  { type: 'service', title: 'Dog walking', desc: 'Weekday walks, 30 or 60 minutes.', price: '$20/walk', contact: 'Alex 0400 000 004', lat: -33.870, lng: 151.207 },
+  { type: 'group', title: 'Sunday park run & coffee', desc: 'All paces welcome. 7am at the gates, one lap of the park.', price: '', contact: 'Chris 0400 000 005', lat: -33.89344, lng: 151.23036,
+    mode: 'foot', km: 4.8, route: [[-33.89344,151.23036],[-33.89453,151.22987],[-33.8948,151.23045],[-33.89436,151.23085],[-33.89479,151.23192],[-33.89424,151.23304],[-33.89417,151.23382],[-33.89416,151.23504],[-33.89459,151.23676],[-33.89511,151.2377],[-33.89617,151.23899],[-33.89777,151.24043],[-33.89876,151.24081],[-33.89996,151.241],[-33.90056,151.24096],[-33.90107,151.24072],[-33.90209,151.23943],[-33.90284,151.23942],[-33.90309,151.24023],[-33.90445,151.23996],[-33.90429,151.2392],[-33.90532,151.23725],[-33.90518,151.23665],[-33.90462,151.23622],[-33.90501,151.23544],[-33.90503,151.23259],[-33.90451,151.23243],[-33.90404,151.23145],[-33.90295,151.23005],[-33.90042,151.22791],[-33.89968,151.22777],[-33.89836,151.22806],[-33.89753,151.22781],[-33.89711,151.22672],[-33.89681,151.22716],[-33.89444,151.22945],[-33.89344,151.23036]] },
+  { type: 'service', title: 'Lawn mowing & edging', desc: 'Small to medium yards.', price: '$45', contact: 'Taylor 0400 000 006', lat: -33.915, lng: 151.230 },
+  { type: 'group', title: 'Community garden working bee', desc: 'Bring gloves, we supply lunch.', price: '', contact: 'Morgan 0400 000 007', lat: -33.902, lng: 151.205 },
+  { type: 'sale', title: 'Ceramic plant pots (set of 3)', desc: '', price: '$25', contact: 'Casey 0400 000 008', lat: -33.858, lng: 151.190 },
+  { type: 'task', title: 'Assemble flat-pack wardrobe', desc: 'Have the tools, just need someone who knows what they are doing.', price: '$50', contact: 'Riley 0400 000 009', lat: -33.876, lng: 151.245 },
+].map((p, i) => ({ id: 'seed' + i, ...p }));
+
+const load = () => { try { return JSON.parse(localStorage.getItem('localhands2')) || SEED; } catch { return SEED; } };
+const save = () => { try { localStorage.setItem('localhands2', JSON.stringify(posts)); } catch {} };
+let posts = load();
+const active = new Set(Object.keys(TYPES));
+
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const $ = id => document.getElementById(id);
+
+// Map
+const map = L.map('map').setView([-33.885, 151.215], 13);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
+}).addTo(map);
+navigator.geolocation?.getCurrentPosition(pos => map.setView([pos.coords.latitude, pos.coords.longitude], 14), () => {});
+const layer = L.layerGroup().addTo(map);
+const markers = {};
+
+const icon = t => L.divIcon({ className: '', html: `<div class="pin" style="background:${TYPES[t].color}"></div>`, iconSize: [26, 26], iconAnchor: [13, 30], popupAnchor: [0, -28] });
+const ROUTE_COLOR = '#f08c1a'; // matches --group; Leaflet paths can't read CSS vars
+const routeText = p => p.route ? `${p.mode === 'bike' ? 'Ride' : 'Run / walk'} route · ${p.km.toFixed(1)} km` : '';
+const popup = p => `<span class="tag" style="color:${TYPES[p.type].color}">${TYPES[p.type].label}</span>
+  <h3>${esc(p.title)}</h3>${p.desc ? `<p>${esc(p.desc)}</p>` : ''}
+  ${p.route ? `<p style="color:${ROUTE_COLOR};font-weight:600">${routeText(p)}</p>` : ''}
+  <p><strong>${p.price ? esc(p.price) : (p.type === 'free' ? 'Free' : '')}</strong></p>
+  <p>Contact: ${esc(p.contact)}</p>`;
+
+// Filters
+$('chips').innerHTML = Object.entries(TYPES).map(([k, t]) =>
+  `<button type="button" class="chip" data-type="${k}" aria-pressed="true"><span class="dot" style="background:${t.color}"></span>${t.label}</button>`).join('');
+$('chips').onclick = e => {
+  const b = e.target.closest('.chip'); if (!b) return;
+  active.has(b.dataset.type) ? active.delete(b.dataset.type) : active.add(b.dataset.type);
+  b.setAttribute('aria-pressed', active.has(b.dataset.type));
+  render();
+};
+$('q').oninput = render;
+
+function render() {
+  const q = $('q').value.trim().toLowerCase();
+  const shown = posts.filter(p => active.has(p.type) && (!q || (p.title + ' ' + p.desc).toLowerCase().includes(q)));
+  layer.clearLayers();
+  for (const p of shown) {
+    if (p.route) L.polyline(p.route, { color: ROUTE_COLOR, weight: 5, opacity: 0.8 }).bindPopup(popup(p)).addTo(layer);
+    markers[p.id] = L.marker([p.lat, p.lng], { icon: icon(p.type) }).bindPopup(popup(p)).addTo(layer);
+  }
+  $('count').textContent = `${shown.length} post${shown.length === 1 ? '' : 's'}`;
+  $('list').innerHTML = shown.length ? shown.map(p => `
+    <li tabindex="0" data-id="${p.id}">
+      <span class="stripe" style="background:${TYPES[p.type].color}"></span>
+      <div><span class="tag" style="color:${TYPES[p.type].color}">${TYPES[p.type].label}</span>
+        <h3>${esc(p.title)}</h3>${p.desc ? `<p>${esc(p.desc)}</p>` : ''}${p.route ? `<p class="route">${routeText(p)}</p>` : ''}</div>
+      <span class="price">${p.price ? esc(p.price) : (p.type === 'free' ? 'Free' : '')}</span>
+    </li>`).join('') : '<li class="empty">No posts match. Try turning a filter back on.</li>';
+}
+
+function showMap() {
+  document.body.classList.add('show-map'); $('viewToggle').textContent = 'List';
+  map.invalidateSize();
+}
+function focusPost(id) {
+  const p = posts.find(x => x.id === id); if (!p) return;
+  showMap();
+  map.once('moveend', () => markers[id].openPopup()); // after the flight, so the popup can pan into view
+  p.route ? map.flyToBounds(p.route, { padding: [40, 40] }) : map.flyTo([p.lat, p.lng], 16);
+}
+$('list').onclick = e => { const li = e.target.closest('li[data-id]'); if (li) focusPost(li.dataset.id); };
+$('list').onkeydown = e => { if (e.key === 'Enter') $('list').onclick(e); };
+
+$('viewToggle').onclick = () => {
+  const showMap = document.body.classList.toggle('show-map');
+  $('viewToggle').textContent = showMap ? 'List' : 'Map';
+  if (showMap) map.invalidateSize();
+};
+
+// New post: fill form, then tap map to place it
+$('f-type').innerHTML = Object.entries(TYPES).map(([k, t]) => `<option value="${k}">${t.label}</option>`).join('');
+const syncRouteField = () => $('f-route-wrap').hidden = $('f-type').value !== 'group';
+$('f-type').onchange = syncRouteField;
+$('addBtn').onclick = () => { $('form').reset(); syncRouteField(); $('dlg').showModal(); };
+$('cancel').onclick = () => $('dlg').close();
+
+// Placing: tap once for a pin, or tap waypoints for a road-following route
+let draft = null, waypoints = [], route = [], km = 0, routeSeq = 0;
+const drawLayer = L.layerGroup().addTo(map);
+L.DomEvent.disableClickPropagation($('drawbar'));
+
+$('form').onsubmit = () => {
+  draft = { id: 'p' + Date.now(), type: $('f-type').value, title: $('f-title').value.trim(), desc: $('f-desc').value.trim(),
+            price: $('f-price').value.trim(), contact: $('f-contact').value.trim(),
+            mode: $('f-type').value === 'group' ? $('f-route').value : '' };
+  waypoints = []; route = []; km = 0;
+  showMap(); map.closePopup();
+  document.body.classList.add('drawing');
+  $('drawbar').hidden = false;
+  $('undoPt').hidden = $('finishDraw').hidden = $('drawkm').hidden = !draft.mode;
+  updateBar();
+};
+
+function updateBar(note = '') {
+  $('drawkm').textContent = km.toFixed(1) + ' km';
+  $('drawmsg').textContent = !draft.mode ? 'Tap the map to place your post'
+    : waypoints.length < 2 ? (waypoints.length ? 'Tap the next point along the route' : 'Tap where the route starts')
+    : note || 'Keep tapping to extend, then Post';
+  $('finishDraw').disabled = waypoints.length < 2;
+  $('undoPt').disabled = !waypoints.length;
+}
+
+function drawPreview() {
+  drawLayer.clearLayers();
+  if (route.length > 1) L.polyline(route, { color: ROUTE_COLOR, weight: 5 }).addTo(drawLayer);
+  waypoints.forEach((w, i) => L.circleMarker(w, { radius: i ? 5 : 7, color: '#fff', weight: 2, fillColor: ROUTE_COLOR, fillOpacity: 1 }).addTo(drawLayer));
+}
+
+async function updateRoute() {
+  const seq = ++routeSeq;
+  let note = '';
+  if (waypoints.length < 2) { route = waypoints.map(w => [w.lat, w.lng]); km = 0; }
+  else {
+    try {
+      const coords = waypoints.map(w => `${w.lng.toFixed(6)},${w.lat.toFixed(6)}`).join(';');
+      const res = await fetch(`https://routing.openstreetmap.de/routed-${draft.mode}/route/v1/driving/${coords}?overview=full&geometries=geojson`);
+      const j = await res.json();
+      if (j.code !== 'Ok') throw new Error(j.code);
+      if (seq !== routeSeq) return; // a newer tap already superseded this request
+      route = j.routes[0].geometry.coordinates.map(([lng, lat]) => [lat, lng]);
+      km = j.routes[0].distance / 1000;
+    } catch {
+      if (seq !== routeSeq || !draft) return;
+      // Routing service unreachable: fall back to straight lines so the post can still be made
+      route = waypoints.map(w => [w.lat, w.lng]);
+      km = waypoints.reduce((d, w, i) => i ? d + map.distance(waypoints[i - 1], w) : 0, 0) / 1000;
+      note = "Couldn't reach road routing, using straight lines";
+    }
+  }
+  if (!draft) return;
+  drawPreview(); updateBar(note);
+}
+
+function endDraw() {
+  draft = null; waypoints = []; route = []; routeSeq++;
+  drawLayer.clearLayers(); $('drawbar').hidden = true;
+  document.body.classList.remove('drawing');
+}
+function publish(extra) {
+  const post = { ...draft, ...extra };
+  if (!post.mode) delete post.mode;
+  endDraw();
+  posts.unshift(post); save(); render(); focusPost(post.id);
+}
+
+map.on('click', e => {
+  if (!draft) return;
+  if (!draft.mode) return publish({ lat: e.latlng.lat, lng: e.latlng.lng });
+  waypoints.push(e.latlng); drawPreview(); updateRoute();
+});
+$('undoPt').onclick = () => { waypoints.pop(); drawPreview(); updateRoute(); };
+$('cancelDraw').onclick = endDraw;
+$('finishDraw').onclick = () => publish({ lat: waypoints[0].lat, lng: waypoints[0].lng, route, km: Math.round(km * 10) / 10 });
+
+render();
+</script>
+</body>
+</html>
