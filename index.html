@@ -65,6 +65,10 @@
   .leaflet-popup-content { font: 14px/1.4 var(--body); margin: 12px 14px; }
   .leaflet-popup-content h3 { margin: 4px 0; font: 600 16px var(--body); }
   .leaflet-popup-content p { margin: 4px 0; }
+  .leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--panel); color: var(--fg); }
+  .leaflet-container a.leaflet-popup-close-button { color: var(--muted); }
+  .when { font-weight: 600; }
+  #list p.when { color: var(--fg); }
   body.drawing .leaflet-marker-pane *, body.drawing .leaflet-overlay-pane * { pointer-events: none !important; }
 
   dialog { border: 0; border-radius: 16px; padding: 0; width: min(440px, calc(100% - 32px)); max-height: calc(100% - 32px); background: var(--panel); color: var(--fg); }
@@ -151,6 +155,7 @@
         <option value="bike">Ride route</option>
       </select>
     </label>
+    <label id="f-when-wrap" hidden>When (optional) <input id="f-when" type="datetime-local"></label>
     <label>Title <input id="f-title" required maxlength="80" placeholder="e.g. Mowing a small front lawn"></label>
     <label>Details <textarea id="f-desc" rows="3" maxlength="400"></textarea></label>
     <label>Price (leave blank if free / n/a) <input id="f-price" maxlength="30" placeholder="$20, $25/hr, Negotiable"></label>
@@ -224,6 +229,7 @@
       <button type="button" data-close>Cancel</button>
       <button class="primary" type="submit" id="profSave">Save</button>
     </div>
+    <p class="hint">Deleting your account removes your profile and all your posts. <button type="button" class="danger" id="deleteAccount">Delete my account</button></p>
   </form>
 </dialog>
 
@@ -243,11 +249,11 @@ const TYPES = {
   group:   { label: 'Group / gathering', color: 'var(--group)' },
 };
 const ROUTE_COLOR = '#f08c1a'; // matches --group; Leaflet paths can't read CSS vars
-const COLS = 'id,user_id,type,title,descr,price,lat,lng,mode,km,route,created_at';
+const COLS = 'id,user_id,type,title,descr,price,lat,lng,mode,km,route,starts_at,created_at';
 
 const configured = !SUPABASE_URL.includes('YOUR-PROJECT');
 const sb = configured ? supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
-let me = null, profile = null, posts = [];
+let me = null, profile = null, posts = [], loaded = false, lastLoad = 0;
 const active = new Set(Object.keys(TYPES));
 
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -265,7 +271,8 @@ function ago(iso) {
 document.querySelectorAll('[data-close]').forEach(b => b.onclick = () => b.closest('dialog').close());
 
 // ---- Map ----
-const map = L.map('map').setView([-33.885, 151.215], 13);
+const map = L.map('map', { zoomControl: false }).setView([-33.885, 151.215], 13);
+L.control.zoom({ position: 'bottomright' }).addTo(map); // top-left would sit over popups
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
 }).addTo(map);
@@ -277,14 +284,17 @@ navigator.geolocation?.getCurrentPosition(pos => { if (!centred) map.setView([po
 
 const icon = t => L.divIcon({ className: '', html: `<div class="pin" style="background:${TYPES[t].color}"></div>`, iconSize: [26, 26], iconAnchor: [13, 30], popupAnchor: [0, -28] });
 const routeText = p => p.route ? `${p.mode === 'bike' ? 'Ride' : 'Run / walk'} route · ${Number(p.km).toFixed(1)} km` : '';
+const whenText = p => new Date(p.starts_at).toLocaleString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
 const priceText = p => p.price ? esc(p.price) : (p.type === 'free' ? 'Free' : '');
 const popup = p => `<span class="tag" style="color:${TYPES[p.type].color}">${TYPES[p.type].label}</span>
-  <h3>${esc(p.title)}</h3>${p.descr ? `<p>${esc(p.descr)}</p>` : ''}
+  <h3>${esc(p.title)}</h3>${p.starts_at ? `<p class="when">${whenText(p)}</p>` : ''}${p.descr ? `<p>${esc(p.descr)}</p>` : ''}
   ${p.route ? `<p style="color:${ROUTE_COLOR};font-weight:600">${routeText(p)}</p>` : ''}
   ${priceText(p) ? `<p><strong>${priceText(p)}</strong></p>` : ''}
   <p>${me ? `Contact: ${esc(p.contact)}` : `<button type="button" class="link" data-signin>Sign in</button> to see contact details`}</p>
   <p class="meta">Posted ${ago(p.created_at)}</p>
-  ${me && p.user_id === me.id ? `<p><button type="button" class="danger" data-del="${p.id}">Delete my post</button></p>` : ''}`;
+  ${p.hidden ? '<p class="err">Hidden from others after several members reported it.</p>' : ''}
+  ${me && p.user_id === me.id ? `<p><button type="button" class="danger" data-del="${p.id}">Delete my post</button></p>`
+    : me ? `<p><button type="button" class="link" data-report="${p.id}">Report this post</button></p>` : ''}`;
 
 function showHome() {
   homeLayer.clearLayers();
@@ -303,25 +313,39 @@ $('chips').onclick = e => {
 };
 $('q').oninput = render;
 
+let shown = [];
 function render() {
   const q = $('q').value.trim().toLowerCase();
-  const shown = posts.filter(p => active.has(p.type) && (!q || (p.title + ' ' + p.descr).toLowerCase().includes(q)));
+  shown = posts.filter(p => active.has(p.type) && (!q || (p.title + ' ' + p.descr).toLowerCase().includes(q)));
   layer.clearLayers();
+  for (const k in markers) delete markers[k];
   for (const p of shown) {
     if (p.route) L.polyline(p.route, { color: ROUTE_COLOR, weight: 5, opacity: 0.8 }).bindPopup(() => popup(p)).addTo(layer);
     markers[p.id] = L.marker([p.lat, p.lng], { icon: icon(p.type) }).bindPopup(() => popup(p)).addTo(layer);
   }
-  $('count').textContent = `${shown.length} post${shown.length === 1 ? '' : 's'}`;
-  $('list').innerHTML = shown.length ? shown.map(p => `
+  renderList();
+}
+
+// The list shows what's on the map right now, so it stays local however big the site gets
+function renderList() {
+  if (!loaded) return;
+  const view = map.getBounds();
+  const here = shown.filter(p => view.contains([p.lat, p.lng]) || (p.route && view.intersects(p._bounds ??= L.latLngBounds(p.route))));
+  const home = profile?.lat ? L.latLng(profile.lat, profile.lng) : null;
+  $('count').textContent = `${here.length} post${here.length === 1 ? '' : 's'} on the map`;
+  $('list').innerHTML = here.length ? here.map(p => `
     <li tabindex="0" data-id="${p.id}">
       <span class="stripe" style="background:${TYPES[p.type].color}"></span>
       <div><span class="tag" style="color:${TYPES[p.type].color}">${TYPES[p.type].label}</span>
-        <h3>${esc(p.title)}</h3>${p.descr ? `<p>${esc(p.descr)}</p>` : ''}${p.route ? `<p class="route">${routeText(p)}</p>` : ''}
-        <p class="meta">${ago(p.created_at)}</p></div>
+        <h3>${esc(p.title)}</h3>${p.starts_at ? `<p class="when">${whenText(p)}</p>` : ''}${p.descr ? `<p>${esc(p.descr)}</p>` : ''}${p.route ? `<p class="route">${routeText(p)}</p>` : ''}
+        <p class="meta">${ago(p.created_at)}${home ? ` · ${(home.distanceTo([p.lat, p.lng]) / 1000).toFixed(1)} km from home` : ''}</p></div>
       <span class="price">${priceText(p)}</span>
     </li>`).join('')
-    : `<li class="empty">${posts.length ? 'No posts match. Try turning a filter back on.' : 'No posts yet. Be the first: tap + Post.'}</li>`;
+    : `<li class="empty">${!posts.length ? 'No posts yet. Be the first: tap + Post.'
+        : !shown.length ? 'No posts match. Try turning a filter back on or clearing the search.'
+        : 'Nothing on this part of the map. Zoom out to see more.'}</li>`;
 }
+map.on('moveend', renderList);
 
 async function loadPosts() {
   if (!sb) {
@@ -330,13 +354,16 @@ async function loadPosts() {
   }
   // ponytail: last 60 days, newest 1000, whole country; filter by map bounds in the query once that's too many
   const since = new Date(Date.now() - 60 * 864e5).toISOString();
-  const { data, error } = await sb.from('posts').select(me ? COLS + ',contact' : COLS)
-    .gte('created_at', since).order('created_at', { ascending: false }).limit(1000);
+  const { data, error } = await sb.from('posts').select(me ? COLS + ',contact,hidden' : COLS)
+    .gte('created_at', since)
+    .or(`starts_at.is.null,starts_at.gte.${new Date(Date.now() - 6 * 36e5).toISOString()}`) // gatherings drop off 6 h after they start
+    .order('created_at', { ascending: false }).limit(1000);
   if (error) { toast("Couldn't load posts. Check your connection and refresh."); return; }
-  posts = data;
+  posts = data; loaded = true; lastLoad = Date.now();
   render();
 }
-document.addEventListener('visibilitychange', () => { if (!document.hidden && !draft) loadPosts(); });
+// Refresh on return to the app, but not so eagerly it closes the popup you were reading
+document.addEventListener('visibilitychange', () => { if (!document.hidden && !draft && Date.now() - lastLoad > 120000) loadPosts(); });
 
 function showMap() {
   document.body.classList.add('show-map'); $('viewToggle').textContent = 'List';
@@ -345,8 +372,9 @@ function showMap() {
 function focusPost(id) {
   const p = posts.find(x => x.id === id); if (!p) return;
   showMap();
-  map.once('moveend', () => markers[id]?.openPopup()); // after the flight, so the popup can pan into view
-  p.route ? map.flyToBounds(p.route, { padding: [40, 40] }) : map.flyTo([p.lat, p.lng], 16);
+  // Jump without animation so the popup opens on a still map and can pan itself fully into view
+  p.route ? map.fitBounds(p.route, { padding: [40, 40], animate: false }) : map.setView([p.lat, p.lng], 16, { animate: false });
+  markers[id]?.openPopup();
 }
 $('list').onclick = e => { const li = e.target.closest('li[data-id]'); if (li) focusPost(li.dataset.id); };
 $('list').onkeydown = e => { if (e.key === 'Enter') $('list').onclick(e); };
@@ -359,6 +387,12 @@ $('viewToggle').onclick = () => {
 // Buttons inside map popups
 document.addEventListener('click', async e => {
   if (e.target.closest('[data-signin]')) return openAuth();
+  const rep = e.target.closest('[data-report]');
+  if (rep) {
+    if (!confirm('Report this post as spam, a scam or offensive? Posts reported by several members are hidden.')) return;
+    const { error } = await sb.from('reports').insert({ post_id: rep.dataset.report });
+    return toast(!error ? 'Thanks. The post has been reported.' : error.code === '23505' ? "You've already reported this post" : "Couldn't send the report. Try again.");
+  }
   const del = e.target.closest('[data-del]');
   if (!del || !confirm('Delete this post? This can\'t be undone.')) return;
   const { error } = await sb.from('posts').delete().eq('id', del.dataset.del);
@@ -424,7 +458,6 @@ async function onSession(session) {
   if (me && !profile) openProfile(); // first sign-in: ask for home suburb
 }
 if (sb) {
-  let first = true;
   sb.auth.onAuthStateChange((event, session) => {
     // Defer: Supabase deadlocks if its own client is awaited inside this callback
     setTimeout(async () => {
@@ -432,11 +465,24 @@ if (sb) {
       if (event === 'INITIAL_SESSION' || event === 'SIGNED_IN' || event === 'SIGNED_OUT') {
         if (event === 'SIGNED_IN' && me?.id === session?.user?.id) return; // token refresh on tab focus
         await onSession(session);
-        if (first) { first = false; if (location.hash.length > 1) focusPost(location.hash.slice(1)); }
+        if (event === 'INITIAL_SESSION') openFromHash();
       }
     });
   });
 } else loadPosts();
+
+// Links and notifications open a post via #post-id
+async function openFromHash() {
+  const id = location.hash.slice(1);
+  if (!/^[0-9a-f-]{36}$/.test(id)) return;
+  if (!posts.some(p => p.id === id)) await loadPosts();
+  focusPost(id);
+}
+window.addEventListener('hashchange', openFromHash);
+navigator.serviceWorker?.addEventListener('message', e => {
+  if (!e.data?.open) return;
+  location.hash === e.data.open ? openFromHash() : location.hash = e.data.open;
+});
 
 $('accountBtn').onclick = () => me ? openProfile() : openAuth();
 
@@ -508,14 +554,25 @@ $('profForm').onsubmit = async e => {
   } finally { $('profSave').disabled = false; }
 };
 
-$('signOut').onclick = async () => {
-  // Stop this device getting the next person's notifications
+// Stop this device getting the next person's notifications
+async function forgetDevice() {
   try {
     const sub = await (await navigator.serviceWorker?.getRegistration())?.pushManager.getSubscription();
     if (sub) { await sb.from('push_subscriptions').delete().eq('endpoint', sub.endpoint); await sub.unsubscribe(); }
   } catch {}
+}
+$('signOut').onclick = async () => {
+  await forgetDevice();
   await sb.auth.signOut();
   $('profDlg').close(); toast('Signed out');
+};
+$('deleteAccount').onclick = async () => {
+  if (!confirm("Delete your account and all your posts? This can't be undone.")) return;
+  const { error } = await sb.functions.invoke('delete-account');
+  if (error) return showErr($('profErr'), "Couldn't delete your account. Check your connection and try again.");
+  await forgetDevice();
+  await sb.auth.signOut({ scope: 'local' });
+  $('profDlg').close(); toast('Your account and posts have been deleted');
 };
 
 // ---- Push notifications ----
@@ -533,17 +590,19 @@ async function enablePush() {
   const key = Uint8Array.from(atob(VAPID_PUBLIC_KEY.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
   const sub = await reg.pushManager.getSubscription() ?? await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
   const { endpoint, keys } = sub.toJSON();
-  const { error } = await sb.from('push_subscriptions').upsert({ endpoint, p256dh: keys.p256dh, auth: keys.auth });
+  const { error } = await sb.rpc('register_device', { p_endpoint: endpoint, p_p256dh: keys.p256dh, p_auth: keys.auth });
   if (error) throw new Error("Couldn't register this device for notifications. Try again.");
 }
 
 // ---- New post ----
 $('f-type').innerHTML = Object.entries(TYPES).map(([k, t]) => `<option value="${k}">${t.label}</option>`).join('');
-const syncRouteField = () => $('f-route-wrap').hidden = $('f-type').value !== 'group';
-$('f-type').onchange = syncRouteField;
+const syncGroupFields = () => $('f-route-wrap').hidden = $('f-when-wrap').hidden = $('f-type').value !== 'group';
+$('f-type').onchange = syncGroupFields;
 $('addBtn').onclick = () => {
   if (!me) return openAuth('Sign in or create a free account to post.');
-  $('form').reset(); syncRouteField();
+  $('form').reset(); syncGroupFields();
+  const now = new Date(); now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+  $('f-when').min = now.toISOString().slice(0, 16);
   $('f-contact').value = profile?.display_name ?? '';
   $('dlg').showModal();
 };
@@ -556,7 +615,8 @@ L.DomEvent.disableClickPropagation($('drawbar'));
 $('form').onsubmit = () => {
   draft = { type: $('f-type').value, title: $('f-title').value.trim(), descr: $('f-desc').value.trim(),
             price: $('f-price').value.trim(), contact: $('f-contact').value.trim(),
-            mode: $('f-type').value === 'group' ? $('f-route').value : '' };
+            mode: $('f-type').value === 'group' ? $('f-route').value : '',
+            starts_at: $('f-type').value === 'group' && $('f-when').value ? new Date($('f-when').value).toISOString() : null };
   waypoints = []; route = []; km = 0;
   showMap(); map.closePopup();
   document.body.classList.add('drawing');
@@ -610,11 +670,16 @@ function endDraw() {
   drawLayer.clearLayers(); $('drawbar').hidden = true;
   document.body.classList.remove('drawing');
 }
+let saving = false;
 async function publish(extra) {
+  if (saving) return; // a second tap while saving would post twice
+  saving = true; $('finishDraw').disabled = true;
   const row = { ...draft, ...extra, mode: draft.mode || null };
+  const { data, error } = await sb.from('posts').insert(row).select(COLS + ',contact,hidden').single();
+  saving = false;
+  // On failure stay in placing mode, so the post and route aren't lost and Post can be tapped again
+  if (error) { updateBar(); return toast(`Couldn't save your post: ${error.message}`); }
   endDraw();
-  const { data, error } = await sb.from('posts').insert(row).select(COLS + ',contact').single();
-  if (error) return toast(`Couldn't save your post: ${error.message}`);
   posts.unshift(data); render(); focusPost(data.id);
   toast('Posted');
   // ponytail: the app triggers notifications, so a post made while offline mid-request won't notify; use a DB webhook if that matters
@@ -622,7 +687,7 @@ async function publish(extra) {
 }
 
 map.on('click', e => {
-  if (!draft) return;
+  if (!draft || saving) return;
   if (!draft.mode) return publish({ lat: e.latlng.lat, lng: e.latlng.lng });
   waypoints.push(e.latlng); drawPreview(); updateRoute();
 });

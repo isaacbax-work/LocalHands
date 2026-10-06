@@ -49,7 +49,7 @@ Deno.serve(async (req) => {
   });
   let sent = 0;
   await Promise.all((subs ?? []).map((s) =>
-    webpush.sendNotification({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } }, payload)
+    webpush.sendNotification({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } }, payload, { TTL: 86400 })
       .then(() => sent++)
       .catch((e: { statusCode?: number }) => {
         console.error('push failed', s.endpoint.slice(0, 60), e.statusCode ?? e);
